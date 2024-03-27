@@ -88,6 +88,7 @@ class DPSGDNode(Node):
             logging.debug("Connected to all neighbors")
 
             to_send = self.sharing.get_data_to_send(degree=len(self.my_neighbors))
+            # logging.info(to_send);
             to_send["CHANNEL"] = "DPSGD"
 
             for neighbor in self.my_neighbors:

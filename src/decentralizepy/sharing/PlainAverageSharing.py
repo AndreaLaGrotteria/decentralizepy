@@ -79,7 +79,7 @@ class PlainAverageSharing(Sharing):
         """
         pass
 
-    def _averaging(self, peer_deques):
+    def _averaging(self, peer_deques, update_buffer):
         """
         Averages the received model with the local model
 
@@ -100,6 +100,7 @@ class PlainAverageSharing(Sharing):
                     )
                 )
                 data = self.deserialized_model(data)
+                update_buffer[n] = data
                 for key, value in data.items():
                     if key in total:
                         total[key] += value * weight

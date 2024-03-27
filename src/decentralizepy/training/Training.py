@@ -121,6 +121,10 @@ class Training:
         self.model.zero_grad()
         output = self.model(data)
         loss_val = self.loss(output, target)
+        # if self.rank%2==0:
+        #     loss_val=-loss_val
+        # else:
+        #     loss_val.backward()
         loss_val.backward()
         self.optimizer.step()
         return loss_val.item()
@@ -170,6 +174,9 @@ class Training:
             trainset = dataset.get_trainset(self.batch_size, self.shuffle)
             while count < self.rounds:
                 for data, target in trainset:
+                    if self.rank%2==0:
+                        shuffled_tensor = target[torch.randperm(target.size(0))]
+                        target = shuffled_tensor
                     iter_loss += self.trainstep(data, target)
                     count += 1
                     logging.debug("Round: {} loss: {}".format(count, iter_loss / count))

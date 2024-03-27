@@ -3,8 +3,10 @@ from pathlib import Path
 from shutil import copy
 
 from localconfig import LocalConfig
+from multiprocessing import Manager
 from torch import multiprocessing as mp
 
+from decentralizepy.attacks.DatasetSharing import DatasetSharing
 from decentralizepy import utils
 from decentralizepy.graphs.Graph import Graph
 from decentralizepy.mappings.Linear import Linear
@@ -52,6 +54,13 @@ if __name__ == "__main__":
     m_id = args.machine_id
 
     processes = []
+    manager = Manager()
+    d = manager.dict()
+    for i in range(procs_per_machine):
+        d[i] = None
+
+    datasets = DatasetSharing(d)
+    
     for r in range(procs_per_machine):
         processes.append(
             mp.Process(
@@ -69,6 +78,7 @@ if __name__ == "__main__":
                     args.test_after,
                     args.train_evaluate_after,
                     args.reset_optimizer,
+                    datasets
                 ],
             )
         )

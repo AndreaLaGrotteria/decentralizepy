@@ -17,6 +17,8 @@ from decentralizepy.datasets.Partitioner import (
 from decentralizepy.mappings.Mapping import Mapping
 from decentralizepy.models.Model import Model
 
+import numpy as np
+
 NUM_CLASSES = 10
 
 
@@ -311,6 +313,82 @@ class CIFAR10(Dataset):
         loss_val = loss_val / count
         logging.info("Overall test accuracy is: {:.1f} %".format(accuracy))
         return accuracy, loss_val
+    
+    def testMIA(self, model, loss, testloader):
+        """
+        Function to evaluate model on the test dataset.
+
+        Parameters
+        ----------
+        model : decentralizepy.models.Model
+            Model to evaluate
+        loss : torch.nn.loss
+            Loss function to use
+
+        Returns
+        -------
+        tuple(float, float)
+
+        """
+        model.eval()
+
+        logging.debug("Test Loader instantiated.")
+
+        correct_pred = [0 for _ in range(NUM_CLASSES)]
+        total_pred = [0 for _ in range(NUM_CLASSES)]
+
+        total_correct = 0
+        total_predicted = 0
+
+        y=[]
+        p=[]
+        l=[]
+
+        with torch.no_grad():
+            loss_val = 0.0
+            count = 0
+            for elems, labels in testloader:
+                outputs = model(elems)
+                loss_tmp = loss(outputs, labels)
+                loss_val += loss_tmp.item()
+                l.append(loss_tmp.numpy())
+                y.append(labels.numpy())
+                p.append(outputs.numpy())
+                count += 1
+                _, predictions = torch.max(outputs, 1)
+
+                for label, prediction, output in zip(labels, predictions, outputs):
+                    logging.debug("{} predicted as {}".format(label, prediction))
+                    # print(type(label),label.s type(prediction))
+
+                    if label == prediction:
+                        correct_pred[label] += 1
+                        total_correct += 1
+                    total_pred[label] += 1
+                    total_predicted += 1
+
+        logging.debug("Predicted on the test set")
+
+        for key, value in enumerate(correct_pred):
+            if total_pred[key] != 0:
+                accuracy = 100 * float(value) / total_pred[key]
+            else:
+                accuracy = 100.0
+            logging.debug("Accuracy for class {} is: {:.1f} %".format(key, accuracy))
+
+        accuracy = 100 * float(total_correct) / total_predicted
+        loss_val = loss_val / count
+        logging.info("Overall test accuracy is: {:.1f} %".format(accuracy))
+
+        raise ValueError(type(y), y[0], len(y), type(p), p[0], len(p), type(l), l[0], len(l))
+
+        p=np.concatenate(p)
+        l=np.concatenate(l)
+        try:
+            y=np.concatenate(y)
+        except:
+            raise 
+        return accuracy, l, p, y
 
     def validate(self, model, loss):
         """
