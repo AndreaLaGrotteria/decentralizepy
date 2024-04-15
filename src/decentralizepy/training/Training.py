@@ -174,9 +174,9 @@ class Training:
             trainset = dataset.get_trainset(self.batch_size, self.shuffle)
             while count < self.rounds:
                 for data, target in trainset:
-                    if self.rank%2==0:
-                        shuffled_tensor = target[torch.randperm(target.size(0))]
-                        target = shuffled_tensor
+                    # if self.rank%2==0:
+                    #     shuffled_tensor = target[torch.randperm(target.size(0))]
+                    #     target = shuffled_tensor
                     iter_loss += self.trainstep(data, target)
                     count += 1
                     logging.debug("Round: {} loss: {}".format(count, iter_loss / count))

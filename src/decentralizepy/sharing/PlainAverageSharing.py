@@ -79,7 +79,7 @@ class PlainAverageSharing(Sharing):
         """
         pass
 
-    def _averaging(self, peer_deques, update_buffer):
+    def _averaging(self, peer_deques, update_buffer, do_echo=False):
         """
         Averages the received model with the local model
 
@@ -112,10 +112,16 @@ class PlainAverageSharing(Sharing):
 
         self.model.load_state_dict(total)
         self._post_step()
-        self.communication_round += 1
+        if not do_echo:
+            self.communication_round += 1
 
     def get_data_to_send(self, *args, **kwargs):
         self._pre_step()
+        data = self.serialized_model()
+        data["iteration"] = self.communication_round
+        return data
+    
+    def get_data_to_send_attack(self, *args, **kwargs):
         data = self.serialized_model()
         data["iteration"] = self.communication_round
         return data

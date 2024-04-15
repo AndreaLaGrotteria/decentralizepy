@@ -4,7 +4,9 @@ from shutil import copy
 
 from localconfig import LocalConfig
 from torch import multiprocessing as mp
+from multiprocessing import Manager
 
+from decentralizepy.attacks.DatasetSharing import DatasetSharing
 from decentralizepy import utils
 from decentralizepy.graphs.Graph import Graph
 from decentralizepy.mappings.Linear import Linear
@@ -51,6 +53,16 @@ if __name__ == "__main__":
     l = Linear(n_machines, procs_per_machine)
     m_id = args.machine_id
 
+    manager = Manager()
+    d = manager.dict()
+    for i in range(procs_per_machine):
+        d[i] = None
+
+    datasets = DatasetSharing(d)
+
+    victim = 14
+    attacker = 0
+
     processes = []
     for r in range(procs_per_machine):
         processes.append(
@@ -69,6 +81,9 @@ if __name__ == "__main__":
                     args.test_after,
                     args.train_evaluate_after,
                     args.reset_optimizer,
+                    datasets,
+                    victim,
+                    attacker
                 ],
             )
         )

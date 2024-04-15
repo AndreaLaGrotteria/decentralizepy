@@ -20,6 +20,7 @@ import copy
 from art.estimators.classification import PyTorchClassifier
 from art.attacks.inference import membership_inference
 import numpy as np
+import random
 
 class EL_Local(Node):
     """
@@ -82,7 +83,9 @@ class EL_Local(Node):
         plt.savefig(filename)
 
     def get_neighbors(self, node=None):
-        return set(self.rng.sample(self.my_neighbors, self.degree))
+        tmp = set(self.rng.sample(self.my_neighbors, self.degree))
+        self.datasets.add_neighbourset(self.uid, tmp)
+        return tmp
 
     def receive_DPSGD(self):
         return self.receive_channel("DPSGD", block=True)
@@ -116,6 +119,7 @@ class EL_Local(Node):
         rounds_to_train_evaluate = self.train_evaluate_after
         global_epoch = 1
         change = 1
+        do_echo = False
         self.rng = Random()
         self.rng.seed(self.dataset.random_seed + self.uid)
 
@@ -129,31 +133,44 @@ class EL_Local(Node):
             logging.info("Starting training iteration: %d", iteration)
             rounds_to_train_evaluate -= 1
             rounds_to_test -= 1
+            
 
             self.iteration = iteration
             self.trainer.train(self.dataset)
+            echo = do_echo and self.uid in self.attackers
 
             neighbors_this_round = self.get_neighbors()
 
             to_send = self.sharing.get_data_to_send()
-            to_send["CHANNEL"] = "DPSGD"
 
-            # Communication Phase
+            if not echo:
+                # Communication Phase
+                if self.uid in self.attackers:
+                    for x in self.my_neighbors:
+                        self.communication.send(
+                            x,
+                            {
+                                "CHANNEL": "DPSGD",
+                                "iteration": iteration,
+                                "NotWorking": True,
+                            },
+                        )
+                else: 
+                    to_send["CHANNEL"] = "DPSGD"
+                    for neighbor in neighbors_this_round:
+                        logging.debug("Sending to neighbor: {} data: {}".format(neighbor,to_send))
+                        self.communication.send(neighbor, to_send)
 
-            for neighbor in neighbors_this_round:
-                logging.debug("Sending to neighbor: %d", neighbor)
-                self.communication.send(neighbor, to_send)
-
-            for x in self.my_neighbors:
-                if x not in neighbors_this_round:
-                    self.communication.send(
-                        x,
-                        {
-                            "CHANNEL": "DPSGD",
-                            "iteration": iteration,
-                            "NotWorking": True,
-                        },
-                    )
+                    for x in self.my_neighbors:
+                        if x not in neighbors_this_round:
+                            self.communication.send(
+                                x,
+                                {
+                                    "CHANNEL": "DPSGD",
+                                    "iteration": iteration,
+                                    "NotWorking": True,
+                                },
+                            )
 
             while not self.received_from_all():
                 response = self.receive_DPSGD()
@@ -163,7 +180,7 @@ class EL_Local(Node):
                         "Received Model from {} of iteration {}: {}".format(
                             sender,
                             data["iteration"],
-                            "NotWorking" if "NotWorking" in data else "",
+                            "NotWorking" if "NotWorking" in data else data,
                         )
                     )
                     if sender not in self.peer_deques:
@@ -172,7 +189,7 @@ class EL_Local(Node):
                     if data["iteration"] == self.iteration:
                         self.peer_deques[sender].appendleft(data)
                     else:
-                        self.peer_deques[sender].append(data)
+                        self.peer_deques[sender].append(data)     
 
             averaging_deque = dict()
             atleast_one = False
@@ -195,8 +212,39 @@ class EL_Local(Node):
 
             update_buffer = {}
             if atleast_one:
-                self.sharing._averaging(averaging_deque,update_buffer)
+                self.sharing._averaging(averaging_deque,update_buffer,echo)
             else:
+                if not echo:
+                    self.sharing.communication_round += 1
+
+            self.model_update_buffer = update_buffer
+
+            if echo:
+                # Communication Phase
+                neighbors_this_round = list(update_buffer.keys())
+                for neighbor in neighbors_this_round:
+                    total = {}
+                    for key, value in self.model_update_buffer[neighbor].items():
+                        total[key] = value
+                    self.model.load_state_dict(total)
+                    to_send = self.sharing.get_data_to_send_attack(degree=len(self.my_neighbors))
+                    to_send["CHANNEL"] = "DPSGD"
+                    # del data["degree"]
+                    logging.debug("Sending to neighbor: {} data: {}".format(neighbor,to_send))
+                    self.communication.send(neighbor, to_send)
+
+                
+                for x in self.my_neighbors:
+                    if x not in neighbors_this_round:
+                        self.communication.send(
+                            x,
+                            {
+                                "CHANNEL": "DPSGD",
+                                "iteration": iteration,
+                                "NotWorking": True,
+                            },
+                        )
+
                 self.sharing.communication_round += 1
 
             if self.reset_optimizer:
@@ -220,19 +268,20 @@ class EL_Local(Node):
                     "total_meta": {},
                     "total_data_per_n": {},
                     "received_this_round": {},
-                    # "mlp_train_acc_baseline": {},
-                    # "mlp_test_acc_baseline": {},
-                    # "mlp_acc_baseline": {},
-                    # "mlp_train_acc_update": {},
-                    # "mlp_test_acc_update": {},
-                    # "mlp_acc_update": {},
-                    # "mlp_train_acc_marginalized": {},
-                    # "mlp_test_acc_marginalized": {},
-                    # "mlp_acc_marginalized": {},
+                    "mlp_train_acc_baseline": {},
+                    "mlp_test_acc_baseline": {},
+                    "mlp_acc_baseline": {},
+                    "mlp_train_acc_update": {},
+                    "mlp_test_acc_update": {},
+                    "mlp_acc_update": {},
+                    "mlp_train_acc_marginalized": {},
+                    "mlp_test_acc_marginalized": {},
+                    "mlp_acc_marginalized": {},
                     "loss_mia_update": {},
                     "ent_mia_update": {},
                     "loss_mia_marginalized": {},
                     "ent_mia_marginalized": {},
+                    "mia_all": {},
                 }
 
             results_dict["total_bytes"][iteration + 1] = self.communication.total_bytes
@@ -263,15 +312,40 @@ class EL_Local(Node):
                     os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
                 )
 
-                mias_update = self.mia_for_each_nn(self.isolate_update, update_buffer)
-                results_dict["loss_mia_update"][iteration + 1] = mias_update[:, 0].mean()
-                results_dict["ent_mia_update"][iteration + 1] = mias_update[:, 1].mean()
-                mias_marginalized = self.mia_for_each_nn(self.isolate_victim, update_buffer)
-                results_dict["loss_mia_marginalized"][iteration + 1] = mias_marginalized[:, 0].mean()
-                results_dict["ent_mia_marginalized"][iteration + 1] = mias_marginalized[:, 1].mean()
+                # modes = ["update"]
+                # if self.attacker == self.uid:
+                #     for mode in modes:
+                #         self.doMIA(update_buffer, iteration, results_dict["mlp_train_acc_"+mode], results_dict["mlp_test_acc_"+mode], results_dict["mlp_acc_"+mode], mode)
 
-                self.plot_multiple([results_dict["loss_mia_update"],results_dict["loss_mia_marginalized"]],["update","marginalized"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
-                self.plot_multiple([results_dict["ent_mia_update"],results_dict["ent_mia_marginalized"]],["update","marginalized"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
+                #     self.plot_multiple([results_dict["mlp_train_acc_update"],results_dict["mlp_train_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Train Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)))
+                #     self.plot_multiple([results_dict["mlp_test_acc_update"],results_dict["mlp_test_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Test Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)))
+                #     self.plot_multiple([results_dict["mlp_acc_update"],results_dict["mlp_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)))
+
+                if self.uid in self.attackers:
+                    pass
+                    # mias_update = self.mia_for_each_nn(self.isolate_update, update_buffer)
+                    # results_dict["mia_all"][iteration + 1] = mias_update
+                    # keys = list(mias_update.keys())
+                    # loss_mia = [v1 for v1, v2 in mias_update.values()]
+                    # ent_mia = [v2 for v1, v2 in mias_update.values()]
+                    # results_dict["loss_mia_update"][iteration + 1] = np.array(loss_mia).mean()
+                    # results_dict["ent_mia_update"][iteration + 1] = np.array(ent_mia).mean()
+                    # # mias_marginalized = self.mia_for_each_nn(self.isolate_victim, update_buffer)
+                    # # results_dict["loss_mia_marginalized"][iteration + 1] = mias_marginalized[:, 0].mean()
+                    # # results_dict["ent_mia_marginalized"][iteration + 1] = mias_marginalized[:, 1].mean()
+
+                    # self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
+                    # self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
+                    # self.plot_multiple([],keys,"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss_all.png".format(self.rank)))
+                    # self.plot_multiple(ent_mia,keys,"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_ent_all.png".format(self.rank)))
+                else:
+                    mias = self.mia_local()
+                    results_dict["mia_all"][iteration + 1] = mias
+                    results_dict["loss_mia_update"][iteration + 1] = mias[0]
+                    results_dict["ent_mia_update"][iteration + 1] = mias[1]
+                    self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
+                    self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
+
 
 
                 # modes = ["update","marginalized"]
@@ -302,12 +376,20 @@ class EL_Local(Node):
                 os.path.join(self.log_dir, "{}_results.json".format(self.rank)), "w"
             ) as of:
                 json.dump(results_dict, of)
-
+        self.my_neighbors = self.graph.neighbors(self.uid)
         self.disconnect_neighbors()
         logging.info("Storing final weight")
         self.model.dump_weights(self.weights_store_dir, self.uid, iteration)
         logging.info("All neighbors disconnected. Process complete!")
 
+
+    def find_victim(self, set, victim):
+        if victim in set:
+            return victim
+        for v in set:
+            if victim in self.datasets.get_neighbourset(v):
+                return v
+        return random.choice(set)
 
     def doMIA(self, update_buffer, iteration, train, test, acc, mode="baseline"):
         mlp_train_acc_all = []
@@ -316,8 +398,13 @@ class EL_Local(Node):
 
 
         for victim in update_buffer:
+        # if True:
+            # victim = self.victim
+
+            #if victim is not part of the neighbors, get one of the neighbors of the victim
+
             # logging.info("Avg deque {}, victim {}".format(averaging_deque,victim))
-            model_copy = LeNet()
+            model_copy = copy.deepcopy(self.model)
 
             if mode == "marginalized":
                 self.isolate_victim(update_buffer,victim,model_copy)
@@ -482,6 +569,12 @@ class EL_Local(Node):
         Ptest = Ptest[:n]
         Ytest = Ytest[:n]
         Ltest = Ltest[:n]
+
+        # if self.uid == 1:
+        #     logging.info(Ltrain)
+        #     # print("METRIC",metric,"\n")
+        #     logging.info(Ptrain)
+        #     logging.info(Ytrain)
             
         # performs optimal threshold for loss-based MIA 
         thrs = self.ths_searching_space(nt, Ltrain, Ltest)
@@ -502,9 +595,10 @@ class EL_Local(Node):
         """ Run MIA for each attacker's neighbors """
         
         nn = sorted(list(update_buffer.keys()))
-        model_copy = LeNet()
+        model_copy = copy.deepcopy(self.model)
 
-        mias = np.zeros((len(nn), 2))
+        # mias = np.zeros((len(nn), 2))
+        mias = {}
         for i, v in enumerate(nn):
             modify_model(update_buffer, v, model_copy)
                         
@@ -512,6 +606,11 @@ class EL_Local(Node):
             
             mias[i] = self.mia_best_th(train_set)
             
+        return mias
+    
+    def mia_local(self):
+        train_set = self.dataset.get_trainset()
+        mias = self.mia_best_th(train_set)
         return mias
 
     def cache_fields(
@@ -612,7 +711,7 @@ class EL_Local(Node):
 
         return total
     
-    def isolate_update(self, model_update_buffer, _, model_copy):
+    def isolate_updates(self, model_update_buffer, _, model_copy):
         """ Computes marginalized model  """
         with torch.no_grad():
             total = dict()
@@ -626,6 +725,21 @@ class EL_Local(Node):
 
             for key, value in self.model.state_dict().items():
                 total[key] += value * weight
+            
+            model_copy.load_state_dict(total)
+
+        return total
+    
+    def isolate_update(self, model_update_buffer, victim, model_copy):
+        """ Computes marginalized model  """
+        with torch.no_grad():
+            total = dict()
+            update = model_update_buffer[victim]
+            for key, value in update.items():
+                if key in total:
+                    total[key] += value 
+                else:
+                    total[key] = value 
             
             model_copy.load_state_dict(total)
 
@@ -682,6 +796,8 @@ class EL_Local(Node):
         train_evaluate_after=1,
         reset_optimizer=1,
         datasets=None,
+        victim=-1,
+        attackers=-1,
         *args
     ):
         """
@@ -740,10 +856,17 @@ class EL_Local(Node):
 
         self.message_queue = dict()
 
+
+        self.victim = victim
+        self.attackers = attackers
+        self.model_update_buffer = {}
+
         self.barrier = set()
         self.my_neighbors = self.graph.neighbors(self.uid)
+        self.true_neighbors = set(self.my_neighbors)-set(self.attackers)
         self.datasets = datasets
         self.datasets.add_dataset(self.uid, self.dataset)
+
 
         self.init_sharing(config["SHARING"])
         self.peer_deques = dict()
@@ -764,6 +887,8 @@ class EL_Local(Node):
         train_evaluate_after=1,
         reset_optimizer=1,
         datasets=None,
+        victim=-1,
+        attackers=[-1],
         *args
     ):
         """
@@ -832,6 +957,8 @@ class EL_Local(Node):
             train_evaluate_after,
             reset_optimizer,
             datasets,
+            victim,
+            attackers,
             *args
         )
 

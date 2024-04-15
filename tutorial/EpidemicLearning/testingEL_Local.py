@@ -58,8 +58,14 @@ if __name__ == "__main__":
     d = manager.dict()
     for i in range(procs_per_machine):
         d[i] = None
+    n = manager.dict()
+    for i in range(procs_per_machine):
+        n[i] = None
 
-    datasets = DatasetSharing(d)
+    datasets = DatasetSharing(d,n)
+
+    victim = 3
+    attackers = [0,1,2]
     
     for r in range(procs_per_machine):
         processes.append(
@@ -78,7 +84,9 @@ if __name__ == "__main__":
                     args.test_after,
                     args.train_evaluate_after,
                     args.reset_optimizer,
-                    datasets
+                    datasets,
+                    victim,
+                    attackers
                 ],
             )
         )

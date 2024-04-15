@@ -293,7 +293,7 @@ class CIFAR10(Dataset):
                 count += 1
                 _, predictions = torch.max(outputs, 1)
                 for label, prediction in zip(labels, predictions):
-                    logging.debug("{} predicted as {}".format(label, prediction))
+                    # logging.debug("{} predicted as {}".format(label, prediction))
                     if label == prediction:
                         correct_pred[label] += 1
                         total_correct += 1
@@ -331,6 +331,7 @@ class CIFAR10(Dataset):
 
         """
         model.eval()
+        lossComplete = nn.CrossEntropyLoss(reduce=None, reduction='none')
 
         logging.debug("Test Loader instantiated.")
 
@@ -349,17 +350,21 @@ class CIFAR10(Dataset):
             count = 0
             for elems, labels in testloader:
                 outputs = model(elems)
-                loss_tmp = loss(outputs, labels)
-                loss_val += loss_tmp.item()
-                l.append(loss_tmp.numpy())
-                y.append(labels.numpy())
-                p.append(outputs.numpy())
+                loss_tmp = lossComplete(outputs, labels)
+                # loss_val += loss_tmp.item()
+
                 count += 1
                 _, predictions = torch.max(outputs, 1)
 
-                for label, prediction, output in zip(labels, predictions, outputs):
-                    logging.debug("{} predicted as {}".format(label, prediction))
+                for label, prediction, output, loss_tmp in zip(labels, predictions, outputs, loss_tmp):
+                    # logging.debug("{} predicted as {}".format(label, prediction))
                     # print(type(label),label.s type(prediction))
+                    m = torch.nn.functional.softmax(output,dim=0)
+                    
+                    y.append(label.item())
+                    p.append(m.numpy())
+                    l.append(loss_tmp.item())
+                    
 
                     if label == prediction:
                         correct_pred[label] += 1
@@ -380,14 +385,11 @@ class CIFAR10(Dataset):
         loss_val = loss_val / count
         logging.info("Overall test accuracy is: {:.1f} %".format(accuracy))
 
-        raise ValueError(type(y), y[0], len(y), type(p), p[0], len(p), type(l), l[0], len(l))
+        # raise ValueError(type(y), y[0], len(y), type(p), p[0], len(p), type(l), l[0], len(l))
 
-        p=np.concatenate(p)
-        l=np.concatenate(l)
-        try:
-            y=np.concatenate(y)
-        except:
-            raise 
+        p=np.array(p)
+        l=np.array(l)
+        y=np.array(y)
         return accuracy, l, p, y
 
     def validate(self, model, loss):
@@ -426,7 +428,7 @@ class CIFAR10(Dataset):
                 count += 1
                 _, predictions = torch.max(outputs, 1)
                 for label, prediction in zip(labels, predictions):
-                    logging.debug("{} predicted as {}".format(label, prediction))
+                    # logging.debug("{} predicted as {}".format(label, prediction))
                     if label == prediction:
                         correct_pred[label] += 1
                         total_correct += 1

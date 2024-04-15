@@ -153,7 +153,7 @@ class Sharing:
         """
         pass
 
-    def _averaging(self, peer_deques):
+    def _averaging(self, peer_deques, update_buffer, do_echo=False):
         """
         Averages the received model with the local model
 
@@ -173,6 +173,7 @@ class Sharing:
                     )
                 )
                 data = self.deserialized_model(data)
+                update_buffer[n] = data
                 # Metro-Hastings
                 weight = 1 / (max(len(peer_deques), degree) + 1)
                 weight_total += weight
@@ -187,10 +188,19 @@ class Sharing:
 
         self.model.load_state_dict(total)
         self._post_step()
-        self.communication_round += 1
+        if not do_echo:
+            self.communication_round += 1
 
     def get_data_to_send(self, degree=None):
         self._pre_step()
+        data = self.serialized_model()
+        my_uid = self.mapping.get_uid(self.rank, self.machine_id)
+        data["degree"] = degree if degree != None else len(self.graph.neighbors(my_uid))
+        data["iteration"] = self.communication_round
+        return data
+    
+    def get_data_to_send_attack(self, degree=None):
+        # self._pre_step()
         data = self.serialized_model()
         my_uid = self.mapping.get_uid(self.rank, self.machine_id)
         data["degree"] = degree if degree != None else len(self.graph.neighbors(my_uid))

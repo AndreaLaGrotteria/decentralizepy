@@ -13,12 +13,45 @@ from decentralizepy.graphs.Graph import Graph
 from decentralizepy.mappings.Mapping import Mapping
 from decentralizepy.node.Node import Node
 
+import copy
+from art.estimators.classification import PyTorchClassifier
+from art.attacks.inference import membership_inference
+import numpy as np
+
 
 class DPSGDNode(Node):
     """
     This class defines the node for DPSGD
 
     """
+
+    def plot_multiple(self, res_list, labels, title, xlabel, filename):
+        """
+        Save Matplotlib plot. Clears previous plots.
+
+        Parameters
+        ----------
+        l : dict
+            dict of x -> y. `x` must be castable to int.
+        label : str
+            label of the plot. Used for legend.
+        title : str
+            Header
+        xlabel : str
+            x-axis label
+        filename : str
+            Name of file to save the plot as.
+
+        """
+        plt.clf()
+        for i,l in enumerate(res_list):
+            y_axis = [l[key] for key in l.keys()]
+            x_axis = list(map(int, l.keys()))
+            plt.plot(x_axis, y_axis, label=labels[i])
+        plt.xlabel(xlabel)
+        plt.title(title)
+        plt.legend()
+        plt.savefig(filename)
 
     def save_plot(self, l, label, title, xlabel, filename):
         """
@@ -88,6 +121,13 @@ class DPSGDNode(Node):
             logging.debug("Connected to all neighbors")
 
             to_send = self.sharing.get_data_to_send(degree=len(self.my_neighbors))
+            if self.iteration != 0 and self.attacker == self.uid:
+                total = {}
+                for key, value in self.model_update_buffer[self.victim].items():
+                    total[key] = value
+                self.model.load_state_dict(total)
+                to_send = self.sharing.get_data_to_send_attack(degree=len(self.my_neighbors))
+
             # logging.info(to_send);
             to_send["CHANNEL"] = "DPSGD"
 
@@ -113,7 +153,9 @@ class DPSGDNode(Node):
             for neighbor in self.my_neighbors:
                 averaging_deque[neighbor] = self.peer_deques[neighbor]
 
-            self.sharing._averaging(averaging_deque)
+            update_buffer = {}
+            self.sharing._averaging(averaging_deque,update_buffer)
+            self.model_update_buffer = update_buffer
 
             if self.reset_optimizer:
                 self.optimizer = self.optimizer_class(
@@ -132,11 +174,23 @@ class DPSGDNode(Node):
                     "train_loss": {},
                     "test_loss": {},
                     "test_acc": {},
-                    "validation_loss": {},
-                    "validation_acc": {},
                     "total_bytes": {},
                     "total_meta": {},
                     "total_data_per_n": {},
+                    "received_this_round": {},
+                    "mlp_train_acc_baseline": {},
+                    "mlp_test_acc_baseline": {},
+                    "mlp_acc_baseline": {},
+                    "mlp_train_acc_update": {},
+                    "mlp_test_acc_update": {},
+                    "mlp_acc_update": {},
+                    "mlp_train_acc_marginalized": {},
+                    "mlp_test_acc_marginalized": {},
+                    "mlp_acc_marginalized": {},
+                    # "loss_mia_update": {},
+                    # "ent_mia_update": {},
+                    # "loss_mia_marginalized": {},
+                    # "ent_mia_marginalized": {},
                 }
 
             results_dict["total_bytes"][iteration + 1] = self.communication.total_bytes
@@ -163,6 +217,17 @@ class DPSGDNode(Node):
                     os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
                 )
 
+                # modes = ["update","marginalized"]
+                modes = ["update"]
+
+                if self.attacker == self.uid:
+                    for mode in modes:
+                        self.doMIA(update_buffer, iteration, results_dict["mlp_train_acc_"+mode], results_dict["mlp_test_acc_"+mode], results_dict["mlp_acc_"+mode], mode)
+
+                    self.plot_multiple([results_dict["mlp_train_acc_update"],results_dict["mlp_train_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Train Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)))
+                    self.plot_multiple([results_dict["mlp_test_acc_update"],results_dict["mlp_test_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Test Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)))
+                    self.plot_multiple([results_dict["mlp_acc_update"],results_dict["mlp_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)))
+
             if self.dataset.__testing__ and rounds_to_test == 0:
                 rounds_to_test = self.test_after * change
                 logging.info("Evaluating on test set.")
@@ -171,9 +236,9 @@ class DPSGDNode(Node):
                 results_dict["test_loss"][iteration + 1] = tl
                 if self.dataset.__validating__:
                     logging.info("Evaluating on the validation set")
-                    va, vl = self.dataset.validate(self.model, self.loss)
-                    results_dict["validation_acc"][iteration + 1] = va
-                    results_dict["validation_loss"][iteration + 1] = vl
+                    # va, vl = self.dataset.validate(self.model, self.loss)
+                    # results_dict["validation_acc"][iteration + 1] = va
+                    # results_dict["validation_loss"][iteration + 1] = vl
 
                 if global_epoch == 49:
                     change *= 2
@@ -272,6 +337,172 @@ class DPSGDNode(Node):
             self.rank, self.machine_id, self.mapping, self.graph.n_procs, **comm_params
         )
 
+    def doMIA(self, update_buffer, iteration, train, test, acc, mode="baseline"):
+        mlp_train_acc_all = []
+        mlp_test_acc_all = []
+        mlp_acc_all = []
+
+
+        # for victim in update_buffer:
+        if True:
+            victim = self.victim
+            # logging.info("Avg deque {}, victim {}".format(averaging_deque,victim))
+            model_copy = copy.deepcopy(self.model)
+
+            if mode == "marginalized":
+                self.isolate_victim(update_buffer,victim,model_copy)
+            elif mode == "update":
+                self.isolate_update(update_buffer,victim,model_copy)
+
+            classifier = PyTorchClassifier(
+                model=model_copy,
+                loss=self.loss,
+                optimizer=self.optimizer,
+                input_shape=(3,32,32),
+                nb_classes=10,
+                clip_values=(0,255)
+            )
+
+            x_train = []
+            y_train = []
+            for data,target in self.datasets.get_dataset(victim).get_trainset():
+                x_train.append(data)
+                y_train.append(target)
+
+            x_test = []
+            y_test = []
+            for datas,targets in self.dataset.get_testset():
+                for data,target in zip(datas,targets):
+                    x_test.append(data)
+                    y_test.append(target)
+
+            x_train = np.array(x_train)
+            y_train = np.array(y_train)
+            x_test = np.array(x_test)
+            y_test = np.array(y_test)
+
+            # print(x_test.shape, y_test.shape)
+
+            x_train = np.squeeze(x_train,axis=1)
+            # x_test = np.squeeze(x_test,axis=1)
+            y_train = np.squeeze(y_train,axis=1)
+            # y_test = np.squeeze(y_test,axis=1)
+            
+            train_set_size = 500
+            attack_train_ratio = 0.5
+            x_train = x_train[:train_set_size]
+            y_train = y_train[:train_set_size]
+            x_test = x_test[:train_set_size]
+            y_test = y_test[:train_set_size]
+            # raise ValueError(y_train.shape)
+            attack_train_size = int(len(x_train) * attack_train_ratio)
+            attack_test_size = int(len(x_test) * attack_train_ratio)
+
+            
+
+            # raise ValueError(x_train.shape)
+            train_pred = np.array([np.argmax(arr) for arr in classifier.predict(x_train.astype(np.float32))])
+            # print('Base model Train accuracy: ', np.sum(train_pred == y_train) / len(y_train))
+
+            test_pred = np.array([np.argmax(arr) for arr in classifier.predict(x_test.astype(np.float32))])
+            # print('Base model Test accuracy: ', np.sum(test_pred == y_test) / len(y_test))
+
+            mlp_attack = membership_inference.MembershipInferenceBlackBox(classifier)
+            # train attack model
+            mlp_attack.fit(x_train[:attack_train_size].astype(np.float32), y_train[:attack_train_size],
+                        x_test[:attack_test_size].astype(np.float32), y_test[:attack_test_size])
+
+            # infer 
+            mlp_inferred_train = mlp_attack.infer(x_train[attack_train_size:].astype(np.float32), y_train[attack_train_size:])
+            mlp_inferred_test = mlp_attack.infer(x_test[attack_test_size:].astype(np.float32), y_test[attack_test_size:])
+
+            # check accuracy
+            mlp_train_acc = np.sum(mlp_inferred_train) / len(mlp_inferred_train)
+            mlp_test_acc = 1 - (np.sum(mlp_inferred_test) / len(mlp_inferred_test))
+            mlp_acc = (mlp_train_acc * len(mlp_inferred_train) + mlp_test_acc * len(mlp_inferred_test)) / (len(mlp_inferred_train) + len(mlp_inferred_test))
+            
+            mlp_train_acc_all.append(mlp_train_acc)
+            mlp_test_acc_all.append(mlp_test_acc)
+            mlp_acc_all.append(mlp_acc)
+            # print(mlp_train_acc)
+            # print(mlp_test_acc)
+            # print(mlp_acc)
+            # logging.info(f"[MIA] victim={victim} MembersAccuracy={mlp_train_acc:.4f} NonMembersAccuracy={mlp_test_acc:.4f} AttackAccuracy={mlp_acc:.4f}")
+
+            
+            # logging.info(var)
+
+        train[iteration + 1] = np.mean(mlp_train_acc_all)
+        test[iteration + 1] = np.mean(mlp_test_acc_all)
+        acc[iteration + 1] = np.mean(mlp_acc_all)
+
+        # self.save_plot(
+        #     results_dict["mlp_train_acc"],
+        #     "mlp_train_acc",
+        #     "Membership Inference Attack Train Accuracy",
+        #     "Communication Rounds",
+        #     os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)),
+        # )
+
+        # self.save_plot(
+        #     results_dict["mlp_test_acc"],
+        #     "mlp_test_acc",
+        #     "Membership Inference Attack Test Accuracy",
+        #     "Communication Rounds",
+        #     os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)),
+        # )
+
+        # self.save_plot(
+        #     results_dict["mlp_acc"],
+        #     "mlp_acc",
+        #     "Membership Inference Attack Accuracy",
+        #     "Communication Rounds",
+        #     os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)),
+        # )
+
+    def isolate_victim(self, model_update_buffer, victim_id, model_copy):
+        """ Computes marginalized model  """
+        with torch.no_grad():
+            total = dict()
+            weight = 1 / (len(model_update_buffer))
+            for id,update in model_update_buffer.items():
+                if id!=victim_id:
+                    for key, value in update.items():
+                        if key in total:
+                            total[key] += value * weight
+                        else:
+                            total[key] = value * weight
+            
+            weight = len(model_update_buffer)
+            for key, value in model_update_buffer[victim_id].items():
+                total[key] -= value * weight
+
+            for key, value in self.model.state_dict().items():
+                total[key] += value * weight
+            
+            model_copy.load_state_dict(total)
+
+        return total
+    
+    def isolate_update(self, model_update_buffer, _, model_copy):
+        """ Computes marginalized model  """
+        with torch.no_grad():
+            total = dict()
+            weight = 1 / (len(model_update_buffer)+1)
+            for id,update in model_update_buffer.items():
+                for key, value in update.items():
+                    if key in total:
+                        total[key] += value * weight
+                    else:
+                        total[key] = value * weight
+
+            for key, value in self.model.state_dict().items():
+                total[key] += value * weight
+            
+            model_copy.load_state_dict(total)
+
+        return total
+
     def instantiate(
         self,
         rank: int,
@@ -286,6 +517,9 @@ class DPSGDNode(Node):
         test_after=5,
         train_evaluate_after=1,
         reset_optimizer=1,
+        datasets=None,
+        victim=-1,
+        attacker=-1,
         *args
     ):
         """
@@ -346,6 +580,12 @@ class DPSGDNode(Node):
 
         self.barrier = set()
         self.my_neighbors = self.graph.neighbors(self.uid)
+        self.datasets = datasets
+        self.datasets.add_dataset(self.uid, self.dataset)
+
+        self.victim = victim
+        self.attacker = attacker
+        self.model_update_buffer = {}
 
         self.init_sharing(config["SHARING"])
         self.peer_deques = dict()
@@ -384,6 +624,9 @@ class DPSGDNode(Node):
         test_after=5,
         train_evaluate_after=1,
         reset_optimizer=1,
+        datasets=None,
+        victim=-1,
+        attacker=-1,
         *args
     ):
         """
@@ -451,6 +694,9 @@ class DPSGDNode(Node):
             test_after,
             train_evaluate_after,
             reset_optimizer,
+            datasets,
+            victim,
+            attacker,
             *args
         )
         logging.info(

@@ -55,6 +55,8 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
     folders.sort()
     print("Reading folders from: ", path)
     print("Folders: ", folders)
+    folders.remove("2024-04-14T22:29")
+    folders.remove("2024-04-14T22:43")
     bytes_means, bytes_stdevs = {}, {}
     meta_means, meta_stdevs = {}, {}
     data_means, data_stdevs = {}, {}
@@ -70,6 +72,10 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
                 continue
             files = os.listdir(mf_path)
             files = [f for f in files if f.endswith("_results.json")]
+            print(files)
+            files.remove("0_results.json")
+            # files.remove("1_results.json")
+            # files.remove("2_results.json")
             for f in files:
                 filepath = os.path.join(mf_path, f)
                 with open(filepath, "r") as inf:
@@ -77,7 +83,7 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
         if folder.startswith("FL") or folder.startswith("Parameter Server"):
             data_node = -1
         else:
-            data_node = 0
+            data_node = 6
         with open(folder_path / data_machine / f"{data_node}_results.json", "r") as f:
             main_data = json.load(f)
         main_data = [main_data]
@@ -101,6 +107,7 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
 
         # Plot Training loss
         plt.figure(1)
+        # print([x["train_loss"] for x in results])
         means, stdevs, mins, maxs = get_stats([x["train_loss"] for x in results])
         plot(means, stdevs, mins, maxs, "Training Loss", folder, "upper right")
 
@@ -132,6 +139,8 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
         df.to_csv(
             os.path.join(path, "train_loss_" + folder + ".csv"), index_label="rounds"
         )
+
+
         # Plot Testing loss
         plt.figure(2)
         if centralized:
@@ -226,6 +235,40 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
         data_means[folder] = list(means.values())[0]
         data_stdevs[folder] = list(stdevs.values())[0]
 
+        # Plot MIA loss
+        plt.figure(6)
+        means, stdevs, mins, maxs = get_stats([x["loss_mia_update"] for x in results if x["loss_mia_update"]])
+        plot(means, stdevs, mins, maxs, "MIA Loss", folder, "upper right")
+
+        correct_bytes = [b_means[x] for x in means]
+
+        df = pd.DataFrame(
+            {
+                "mean": list(means.values()),
+                "std": list(stdevs.values()),
+                "nr_nodes": [len(results)] * len(means),
+                "total_bytes": correct_bytes,
+            },
+            list(means.keys()),
+            columns=["mean", "std", "nr_nodes", "total_bytes"],
+        )
+        plt.figure(16)
+        means = replace_dict_key(means, b_means)
+        plot(
+            means,
+            stdevs,
+            mins,
+            maxs,
+            "MIA Loss",
+            folder,
+            "upper right",
+            "Total Bytes per node",
+        )
+
+        df.to_csv(
+            os.path.join(path, "mia_loss_" + folder + ".csv"), index_label="rounds"
+        )
+
     plt.figure(10)
     plt.savefig(os.path.join(path, "total_bytes.png"), dpi=300)
     plt.figure(11)
@@ -234,6 +277,8 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
     plt.savefig(os.path.join(path, "bytes_test_loss.png"), dpi=300)
     plt.figure(13)
     plt.savefig(os.path.join(path, "bytes_test_acc.png"), dpi=300)
+    plt.figure(16)
+    plt.savefig(os.path.join(path, "bytes_mia_acc.png"), dpi=300)
 
     plt.figure(1)
     plt.savefig(os.path.join(path, "train_loss.png"), dpi=300)
@@ -241,6 +286,8 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
     plt.savefig(os.path.join(path, "test_loss.png"), dpi=300)
     plt.figure(3)
     plt.savefig(os.path.join(path, "test_acc.png"), dpi=300)
+    plt.figure(6)
+    plt.savefig(os.path.join(path, "mia_loss.png"), dpi=300)
     # Plot total_bytes
     plt.figure(4)
     plt.title("Data Shared")
