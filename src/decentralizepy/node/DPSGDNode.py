@@ -187,8 +187,9 @@ class DPSGDNode(Node):
                     "mlp_train_acc_marginalized": {},
                     "mlp_test_acc_marginalized": {},
                     "mlp_acc_marginalized": {},
-                    # "loss_mia_update": {},
-                    # "ent_mia_update": {},
+                    "loss_mia_update": {},
+                    "ent_mia_update": {},
+                    "mia_all": {},
                     # "loss_mia_marginalized": {},
                     # "ent_mia_marginalized": {},
                 }
@@ -220,13 +221,13 @@ class DPSGDNode(Node):
                 # modes = ["update","marginalized"]
                 modes = ["update"]
 
-                if self.attacker == self.uid:
-                    for mode in modes:
-                        self.doMIA(update_buffer, iteration, results_dict["mlp_train_acc_"+mode], results_dict["mlp_test_acc_"+mode], results_dict["mlp_acc_"+mode], mode)
+                mias = self.mia_local()
+                results_dict["mia_all"][iteration + 1] = mias
+                results_dict["loss_mia_update"][iteration + 1] = mias[0]
+                results_dict["ent_mia_update"][iteration + 1] = mias[1]
+                self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
+                self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
 
-                    self.plot_multiple([results_dict["mlp_train_acc_update"],results_dict["mlp_train_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Train Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)))
-                    self.plot_multiple([results_dict["mlp_test_acc_update"],results_dict["mlp_test_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Test Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)))
-                    self.plot_multiple([results_dict["mlp_acc_update"],results_dict["mlp_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)))
 
             if self.dataset.__testing__ and rounds_to_test == 0:
                 rounds_to_test = self.test_after * change
@@ -236,9 +237,6 @@ class DPSGDNode(Node):
                 results_dict["test_loss"][iteration + 1] = tl
                 if self.dataset.__validating__:
                     logging.info("Evaluating on the validation set")
-                    # va, vl = self.dataset.validate(self.model, self.loss)
-                    # results_dict["validation_acc"][iteration + 1] = va
-                    # results_dict["validation_loss"][iteration + 1] = vl
 
                 if global_epoch == 49:
                     change *= 2
@@ -262,6 +260,94 @@ class DPSGDNode(Node):
         logging.info("Storing final weight")
         self.model.dump_weights(self.weights_store_dir, self.uid, iteration)
         logging.info("All neighbors disconnected. Process complete!")
+
+    def compute_modified_entropy(self, p, y, epsilon=0.00001):
+        """ Computes label informed entropy from 'Systematic evaluation of privacy risks of machine learning models' USENIX21 """
+        assert len(y) == len(p)
+        n = len(p)
+
+        entropy = np.zeros(n)
+
+        for i in range(n):
+            pi = p[i]
+            yi = y[i]
+            for j, pij in enumerate(pi):
+                if j == yi:
+                    # right class
+                    entropy[i] -= (1-pij)*np.log(pij+epsilon)
+                else:
+                    entropy[i] -= (pij)*np.log(1-pij+epsilon)
+
+        return entropy
+    
+    def ths_searching_space(self, nt, train, test):
+        """ it defines the threshold searching space as nt points between the max and min value for the given metrics """
+        thrs = np.linspace(
+            min(train.min(), test.min()),
+            max(train.max(), test.max()), 
+            nt
+        )
+        return thrs
+    
+    def mia_best_th(self, train_set, nt=150):
+        """ Perfom naive, metric-based MIA with 'optimal' threshold """
+        
+        def search_th(Etrain, Etest):
+            R = np.empty(len(thrs))
+            for i, th in enumerate(thrs):
+                tp = (Etrain < th).sum()
+                tn = (Etest >= th).sum()
+                acc = (tp + tn) / (Etrain.shape[0] + Etest.shape[0])
+                R[i] = acc
+            return R.max()
+        
+        # evaluating model on train and test set
+        # I need loss, accuracy and Output
+        _, Ltrain, Ptrain, Ytrain = self.dataset.testMIA(self.model, self.loss, train_set)
+        _, Ltest, Ptest, Ytest = self.dataset.testMIA(self.model, self.loss, self.dataset.get_testset())
+        
+        # it takes a subset of results on test set with size equal to the one of the training test 
+        n = Ptrain.shape[0]
+        Ptest = Ptest[:n]
+        Ytest = Ytest[:n]
+        Ltest = Ltest[:n]
+
+        # performs optimal threshold for loss-based MIA 
+        thrs = self.ths_searching_space(nt, Ltrain, Ltest)
+        loss_mia = search_th(Ltrain, Ltest)
+        
+        # computes entropy
+        Etrain = self.compute_modified_entropy(Ptrain, Ytrain)
+        Etest = self.compute_modified_entropy(Ptest, Ytest)
+        
+        # performs optimal threshold for entropy-based MIA 
+        thrs = self.ths_searching_space(nt, Etrain, Etest)
+        ent_mia = search_th(Etrain, Etest)
+        
+        return loss_mia, ent_mia
+
+
+    def mia_for_each_nn(self, modify_model, update_buffer):
+        """ Run MIA for each attacker's neighbors """
+        
+        nn = sorted(list(update_buffer.keys()))
+        model_copy = copy.deepcopy(self.model)
+
+        # mias = np.zeros((len(nn), 2))
+        mias = {}
+        for i, v in enumerate(nn):
+            modify_model(update_buffer, v, model_copy)
+                        
+            train_set = self.datasets.get_dataset(v).get_trainset()
+            
+            mias[i] = self.mia_best_th(train_set)
+            
+        return mias
+    
+    def mia_local(self):
+        train_set = self.dataset.get_trainset()
+        mias = self.mia_best_th(train_set)
+        return mias
 
     def cache_fields(
         self,
@@ -336,129 +422,6 @@ class DPSGDNode(Node):
         self.communication = comm_class(
             self.rank, self.machine_id, self.mapping, self.graph.n_procs, **comm_params
         )
-
-    def doMIA(self, update_buffer, iteration, train, test, acc, mode="baseline"):
-        mlp_train_acc_all = []
-        mlp_test_acc_all = []
-        mlp_acc_all = []
-
-
-        # for victim in update_buffer:
-        if True:
-            victim = self.victim
-            # logging.info("Avg deque {}, victim {}".format(averaging_deque,victim))
-            model_copy = copy.deepcopy(self.model)
-
-            if mode == "marginalized":
-                self.isolate_victim(update_buffer,victim,model_copy)
-            elif mode == "update":
-                self.isolate_update(update_buffer,victim,model_copy)
-
-            classifier = PyTorchClassifier(
-                model=model_copy,
-                loss=self.loss,
-                optimizer=self.optimizer,
-                input_shape=(3,32,32),
-                nb_classes=10,
-                clip_values=(0,255)
-            )
-
-            x_train = []
-            y_train = []
-            for data,target in self.datasets.get_dataset(victim).get_trainset():
-                x_train.append(data)
-                y_train.append(target)
-
-            x_test = []
-            y_test = []
-            for datas,targets in self.dataset.get_testset():
-                for data,target in zip(datas,targets):
-                    x_test.append(data)
-                    y_test.append(target)
-
-            x_train = np.array(x_train)
-            y_train = np.array(y_train)
-            x_test = np.array(x_test)
-            y_test = np.array(y_test)
-
-            # print(x_test.shape, y_test.shape)
-
-            x_train = np.squeeze(x_train,axis=1)
-            # x_test = np.squeeze(x_test,axis=1)
-            y_train = np.squeeze(y_train,axis=1)
-            # y_test = np.squeeze(y_test,axis=1)
-            
-            train_set_size = 500
-            attack_train_ratio = 0.5
-            x_train = x_train[:train_set_size]
-            y_train = y_train[:train_set_size]
-            x_test = x_test[:train_set_size]
-            y_test = y_test[:train_set_size]
-            # raise ValueError(y_train.shape)
-            attack_train_size = int(len(x_train) * attack_train_ratio)
-            attack_test_size = int(len(x_test) * attack_train_ratio)
-
-            
-
-            # raise ValueError(x_train.shape)
-            train_pred = np.array([np.argmax(arr) for arr in classifier.predict(x_train.astype(np.float32))])
-            # print('Base model Train accuracy: ', np.sum(train_pred == y_train) / len(y_train))
-
-            test_pred = np.array([np.argmax(arr) for arr in classifier.predict(x_test.astype(np.float32))])
-            # print('Base model Test accuracy: ', np.sum(test_pred == y_test) / len(y_test))
-
-            mlp_attack = membership_inference.MembershipInferenceBlackBox(classifier)
-            # train attack model
-            mlp_attack.fit(x_train[:attack_train_size].astype(np.float32), y_train[:attack_train_size],
-                        x_test[:attack_test_size].astype(np.float32), y_test[:attack_test_size])
-
-            # infer 
-            mlp_inferred_train = mlp_attack.infer(x_train[attack_train_size:].astype(np.float32), y_train[attack_train_size:])
-            mlp_inferred_test = mlp_attack.infer(x_test[attack_test_size:].astype(np.float32), y_test[attack_test_size:])
-
-            # check accuracy
-            mlp_train_acc = np.sum(mlp_inferred_train) / len(mlp_inferred_train)
-            mlp_test_acc = 1 - (np.sum(mlp_inferred_test) / len(mlp_inferred_test))
-            mlp_acc = (mlp_train_acc * len(mlp_inferred_train) + mlp_test_acc * len(mlp_inferred_test)) / (len(mlp_inferred_train) + len(mlp_inferred_test))
-            
-            mlp_train_acc_all.append(mlp_train_acc)
-            mlp_test_acc_all.append(mlp_test_acc)
-            mlp_acc_all.append(mlp_acc)
-            # print(mlp_train_acc)
-            # print(mlp_test_acc)
-            # print(mlp_acc)
-            # logging.info(f"[MIA] victim={victim} MembersAccuracy={mlp_train_acc:.4f} NonMembersAccuracy={mlp_test_acc:.4f} AttackAccuracy={mlp_acc:.4f}")
-
-            
-            # logging.info(var)
-
-        train[iteration + 1] = np.mean(mlp_train_acc_all)
-        test[iteration + 1] = np.mean(mlp_test_acc_all)
-        acc[iteration + 1] = np.mean(mlp_acc_all)
-
-        # self.save_plot(
-        #     results_dict["mlp_train_acc"],
-        #     "mlp_train_acc",
-        #     "Membership Inference Attack Train Accuracy",
-        #     "Communication Rounds",
-        #     os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)),
-        # )
-
-        # self.save_plot(
-        #     results_dict["mlp_test_acc"],
-        #     "mlp_test_acc",
-        #     "Membership Inference Attack Test Accuracy",
-        #     "Communication Rounds",
-        #     os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)),
-        # )
-
-        # self.save_plot(
-        #     results_dict["mlp_acc"],
-        #     "mlp_acc",
-        #     "Membership Inference Attack Accuracy",
-        #     "Communication Rounds",
-        #     os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)),
-        # )
 
     def isolate_victim(self, model_update_buffer, victim_id, model_copy):
         """ Computes marginalized model  """

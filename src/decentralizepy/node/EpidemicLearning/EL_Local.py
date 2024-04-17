@@ -119,7 +119,7 @@ class EL_Local(Node):
         rounds_to_train_evaluate = self.train_evaluate_after
         global_epoch = 1
         change = 1
-        do_echo = False
+        do_echo = True
         self.rng = Random()
         self.rng.seed(self.dataset.random_seed + self.uid)
 
@@ -137,7 +137,7 @@ class EL_Local(Node):
 
             self.iteration = iteration
             self.trainer.train(self.dataset)
-            echo = do_echo and self.uid in self.attackers
+            echo = do_echo and self.uid in self.active_attackers
 
             neighbors_this_round = self.get_neighbors()
 
@@ -171,6 +171,17 @@ class EL_Local(Node):
                                     "NotWorking": True,
                                 },
                             )
+            else:
+                for x in self.attackers:
+                    if x != self.uid:
+                        self.communication.send(
+                            x,
+                            {
+                                "CHANNEL": "DPSGD",
+                                "iteration": iteration,
+                                "NotWorking": True,
+                            },
+                        )
 
             while not self.received_from_all():
                 response = self.receive_DPSGD()
@@ -312,32 +323,9 @@ class EL_Local(Node):
                     os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
                 )
 
-                # modes = ["update"]
-                # if self.attacker == self.uid:
-                #     for mode in modes:
-                #         self.doMIA(update_buffer, iteration, results_dict["mlp_train_acc_"+mode], results_dict["mlp_test_acc_"+mode], results_dict["mlp_acc_"+mode], mode)
-
-                #     self.plot_multiple([results_dict["mlp_train_acc_update"],results_dict["mlp_train_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Train Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)))
-                #     self.plot_multiple([results_dict["mlp_test_acc_update"],results_dict["mlp_test_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Test Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)))
-                #     self.plot_multiple([results_dict["mlp_acc_update"],results_dict["mlp_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)))
 
                 if self.uid in self.attackers:
                     pass
-                    # mias_update = self.mia_for_each_nn(self.isolate_update, update_buffer)
-                    # results_dict["mia_all"][iteration + 1] = mias_update
-                    # keys = list(mias_update.keys())
-                    # loss_mia = [v1 for v1, v2 in mias_update.values()]
-                    # ent_mia = [v2 for v1, v2 in mias_update.values()]
-                    # results_dict["loss_mia_update"][iteration + 1] = np.array(loss_mia).mean()
-                    # results_dict["ent_mia_update"][iteration + 1] = np.array(ent_mia).mean()
-                    # # mias_marginalized = self.mia_for_each_nn(self.isolate_victim, update_buffer)
-                    # # results_dict["loss_mia_marginalized"][iteration + 1] = mias_marginalized[:, 0].mean()
-                    # # results_dict["ent_mia_marginalized"][iteration + 1] = mias_marginalized[:, 1].mean()
-
-                    # self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
-                    # self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
-                    # self.plot_multiple([],keys,"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss_all.png".format(self.rank)))
-                    # self.plot_multiple(ent_mia,keys,"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_ent_all.png".format(self.rank)))
                 else:
                     mias = self.mia_local()
                     results_dict["mia_all"][iteration + 1] = mias
@@ -345,19 +333,6 @@ class EL_Local(Node):
                     results_dict["ent_mia_update"][iteration + 1] = mias[1]
                     self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
                     self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
-
-
-
-                # modes = ["update","marginalized"]
-                # for mode in modes:
-                #     self.doMIA(update_buffer, iteration, results_dict["mlp_train_acc_"+mode], results_dict["mlp_test_acc_"+mode], results_dict["mlp_acc_"+mode], mode)
-
-                # self.plot_multiple([results_dict["mlp_train_acc_update"],results_dict["mlp_train_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Train Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)))
-                # self.plot_multiple([results_dict["mlp_test_acc_update"],results_dict["mlp_test_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Test Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)))
-                # self.plot_multiple([results_dict["mlp_acc_update"],results_dict["mlp_acc_marginalized"]],["update","marginalized"],"Membership Inference Attack Accuracy","Communication Rounds",os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)))
-
-                
-
 
 
             if self.dataset.__testing__ and rounds_to_test == 0:
@@ -390,132 +365,6 @@ class EL_Local(Node):
             if victim in self.datasets.get_neighbourset(v):
                 return v
         return random.choice(set)
-
-    def doMIA(self, update_buffer, iteration, train, test, acc, mode="baseline"):
-        mlp_train_acc_all = []
-        mlp_test_acc_all = []
-        mlp_acc_all = []
-
-
-        for victim in update_buffer:
-        # if True:
-            # victim = self.victim
-
-            #if victim is not part of the neighbors, get one of the neighbors of the victim
-
-            # logging.info("Avg deque {}, victim {}".format(averaging_deque,victim))
-            model_copy = copy.deepcopy(self.model)
-
-            if mode == "marginalized":
-                self.isolate_victim(update_buffer,victim,model_copy)
-            elif mode == "update":
-                self.isolate_update(update_buffer,model_copy)
-
-            classifier = PyTorchClassifier(
-                model=model_copy,
-                loss=self.loss,
-                optimizer=self.optimizer,
-                input_shape=(3,32,32),
-                nb_classes=10,
-                clip_values=(0,255)
-            )
-
-            x_train = []
-            y_train = []
-            for data,target in self.datasets.get_dataset(victim).get_trainset():
-                x_train.append(data)
-                y_train.append(target)
-
-            x_test = []
-            y_test = []
-            for datas,targets in self.dataset.get_testset():
-                for data,target in zip(datas,targets):
-                    x_test.append(data)
-                    y_test.append(target)
-
-            x_train = np.array(x_train)
-            y_train = np.array(y_train)
-            x_test = np.array(x_test)
-            y_test = np.array(y_test)
-
-            # print(x_test.shape, y_test.shape)
-
-            x_train = np.squeeze(x_train,axis=1)
-            # x_test = np.squeeze(x_test,axis=1)
-            y_train = np.squeeze(y_train,axis=1)
-            # y_test = np.squeeze(y_test,axis=1)
-            
-            train_set_size = 500
-            attack_train_ratio = 0.5
-            x_train = x_train[:train_set_size]
-            y_train = y_train[:train_set_size]
-            x_test = x_test[:train_set_size]
-            y_test = y_test[:train_set_size]
-            # raise ValueError(y_train.shape)
-            attack_train_size = int(len(x_train) * attack_train_ratio)
-            attack_test_size = int(len(x_test) * attack_train_ratio)
-
-            
-
-            # raise ValueError(x_train.shape)
-            train_pred = np.array([np.argmax(arr) for arr in classifier.predict(x_train.astype(np.float32))])
-            # print('Base model Train accuracy: ', np.sum(train_pred == y_train) / len(y_train))
-
-            test_pred = np.array([np.argmax(arr) for arr in classifier.predict(x_test.astype(np.float32))])
-            # print('Base model Test accuracy: ', np.sum(test_pred == y_test) / len(y_test))
-
-            mlp_attack = membership_inference.MembershipInferenceBlackBox(classifier)
-            # train attack model
-            mlp_attack.fit(x_train[:attack_train_size].astype(np.float32), y_train[:attack_train_size],
-                        x_test[:attack_test_size].astype(np.float32), y_test[:attack_test_size])
-
-            # infer 
-            mlp_inferred_train = mlp_attack.infer(x_train[attack_train_size:].astype(np.float32), y_train[attack_train_size:])
-            mlp_inferred_test = mlp_attack.infer(x_test[attack_test_size:].astype(np.float32), y_test[attack_test_size:])
-
-            # check accuracy
-            mlp_train_acc = np.sum(mlp_inferred_train) / len(mlp_inferred_train)
-            mlp_test_acc = 1 - (np.sum(mlp_inferred_test) / len(mlp_inferred_test))
-            mlp_acc = (mlp_train_acc * len(mlp_inferred_train) + mlp_test_acc * len(mlp_inferred_test)) / (len(mlp_inferred_train) + len(mlp_inferred_test))
-            
-            mlp_train_acc_all.append(mlp_train_acc)
-            mlp_test_acc_all.append(mlp_test_acc)
-            mlp_acc_all.append(mlp_acc)
-            # print(mlp_train_acc)
-            # print(mlp_test_acc)
-            # print(mlp_acc)
-            # logging.info(f"[MIA] victim={victim} MembersAccuracy={mlp_train_acc:.4f} NonMembersAccuracy={mlp_test_acc:.4f} AttackAccuracy={mlp_acc:.4f}")
-
-            
-            # logging.info(var)
-
-        train[iteration + 1] = np.mean(mlp_train_acc_all)
-        test[iteration + 1] = np.mean(mlp_test_acc_all)
-        acc[iteration + 1] = np.mean(mlp_acc_all)
-
-        # self.save_plot(
-        #     results_dict["mlp_train_acc"],
-        #     "mlp_train_acc",
-        #     "Membership Inference Attack Train Accuracy",
-        #     "Communication Rounds",
-        #     os.path.join(self.log_dir, "{}_mlp_train_acc.png".format(self.rank)),
-        # )
-
-        # self.save_plot(
-        #     results_dict["mlp_test_acc"],
-        #     "mlp_test_acc",
-        #     "Membership Inference Attack Test Accuracy",
-        #     "Communication Rounds",
-        #     os.path.join(self.log_dir, "{}_mlp_test_acc.png".format(self.rank)),
-        # )
-
-        # self.save_plot(
-        #     results_dict["mlp_acc"],
-        #     "mlp_acc",
-        #     "Membership Inference Attack Accuracy",
-        #     "Communication Rounds",
-        #     os.path.join(self.log_dir, "{}_mlp_acc.png".format(self.rank)),
-        # )
 
 
     def compute_modified_entropy(self, p, y, epsilon=0.00001):
@@ -797,7 +646,8 @@ class EL_Local(Node):
         reset_optimizer=1,
         datasets=None,
         victim=-1,
-        attackers=-1,
+        attackers=[-1],
+        active_attackers=[-1],
         *args
     ):
         """
@@ -859,6 +709,7 @@ class EL_Local(Node):
 
         self.victim = victim
         self.attackers = attackers
+        self.active_attackers = active_attackers
         self.model_update_buffer = {}
 
         self.barrier = set()
@@ -889,6 +740,7 @@ class EL_Local(Node):
         datasets=None,
         victim=-1,
         attackers=[-1],
+        active_attackers=[-1],
         *args
     ):
         """
@@ -959,6 +811,7 @@ class EL_Local(Node):
             datasets,
             victim,
             attackers,
+            active_attackers,
             *args
         )
 

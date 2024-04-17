@@ -66,6 +66,7 @@ if __name__ == "__main__":
 
     victim = 3
     attackers = [0,1,2]
+    active_attackers = []
     
     for r in range(procs_per_machine):
         processes.append(
@@ -86,7 +87,8 @@ if __name__ == "__main__":
                     args.reset_optimizer,
                     datasets,
                     victim,
-                    attackers
+                    attackers,
+                    active_attackers
                 ],
             )
         )

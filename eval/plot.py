@@ -55,8 +55,6 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
     folders.sort()
     print("Reading folders from: ", path)
     print("Folders: ", folders)
-    folders.remove("2024-04-14T22:29")
-    folders.remove("2024-04-14T22:43")
     bytes_means, bytes_stdevs = {}, {}
     meta_means, meta_stdevs = {}, {}
     data_means, data_stdevs = {}, {}
@@ -73,7 +71,7 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
             files = os.listdir(mf_path)
             files = [f for f in files if f.endswith("_results.json")]
             print(files)
-            files.remove("0_results.json")
+            # files.remove("0_results.json")
             # files.remove("1_results.json")
             # files.remove("2_results.json")
             for f in files:
