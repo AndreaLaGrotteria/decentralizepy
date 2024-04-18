@@ -51,6 +51,9 @@ if __name__ == "__main__":
     l = Linear(n_machines, procs_per_machine)
     m_id = args.machine_id
 
+    attackers = [0]
+    active_attackers = [0]
+
     processes = []
     for r in range(procs_per_machine):
         processes.append(
@@ -69,6 +72,8 @@ if __name__ == "__main__":
                     args.test_after,
                     args.train_evaluate_after,
                     args.reset_optimizer,
+                    attackers,
+                    active_attackers,
                 ],
             )
         )

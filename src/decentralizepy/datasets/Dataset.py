@@ -14,6 +14,7 @@ class Dataset:
         rank: int,
         machine_id: int,
         mapping: Mapping,
+        num_attackers: int = 0,
         random_seed: int = 1234,
         only_local=False,
         train_dir="",
@@ -61,8 +62,9 @@ class Dataset:
         self.uid = self.mapping.get_uid(rank, machine_id)
         self.only_local = only_local
         self.dataset_id = self.rank if self.only_local else self.uid
+        self.dataset_id-=num_attackers
         self.num_partitions = (
-            self.mapping.get_local_procs_count()
+            self.mapping.get_local_procs_count()-num_attackers
             if self.only_local
             else self.mapping.get_n_procs()
         )

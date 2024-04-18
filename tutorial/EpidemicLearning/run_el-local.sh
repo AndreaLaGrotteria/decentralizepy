@@ -2,7 +2,7 @@
 
 decpy_path=../../eval # Path to eval folder
 graph=fullyConnected_16.edges # Absolute path of the graph file generated using the generate_graph.py script
-run_path=../../eval/data/base # Path to the folder where the graph and config file will be copied and the results will be stored
+run_path=../../eval/data/no-attacker-dataset # Path to the folder where the graph and config file will be copied and the results will be stored
 config_file=config_EL.ini
 cp $graph $config_file $run_path
 

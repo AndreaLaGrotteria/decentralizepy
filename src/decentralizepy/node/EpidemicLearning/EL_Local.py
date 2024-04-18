@@ -14,6 +14,9 @@ from decentralizepy.graphs.Graph import Graph
 from decentralizepy.mappings.Mapping import Mapping
 from decentralizepy.node.Node import Node
 
+from decentralizepy.attacks.MIA import MIA
+from decentralizepy.attacks.Echo import Echo
+
 
 class EL_Local(Node):
     """
@@ -45,6 +48,34 @@ class EL_Local(Node):
         plt.plot(x_axis, y_axis, label=label)
         plt.xlabel(xlabel)
         plt.title(title)
+        plt.savefig(filename)
+
+    def plot_multiple(self, res_list, labels, title, xlabel, filename):
+        """
+        Save Matplotlib plot. Clears previous plots.
+
+        Parameters
+        ----------
+        l : dict
+            dict of x -> y. `x` must be castable to int.
+        label : str
+            label of the plot. Used for legend.
+        title : str
+            Header
+        xlabel : str
+            x-axis label
+        filename : str
+            Name of file to save the plot as.
+
+        """
+        plt.clf()
+        for i,l in enumerate(res_list):
+            y_axis = [l[key] for key in l.keys()]
+            x_axis = list(map(int, l.keys()))
+            plt.plot(x_axis, y_axis, label=labels[i])
+        plt.xlabel(xlabel)
+        plt.title(title)
+        plt.legend()
         plt.savefig(filename)
 
     def get_neighbors(self, node=None):
@@ -106,30 +137,36 @@ class EL_Local(Node):
 
             # Communication Phase
 
-            for neighbor in neighbors_this_round:
-                logging.debug("Sending to neighbor: %d", neighbor)
-                self.communication.send(neighbor, to_send)
+            if self.echo.is_attacker():
+                self.echo.send_not_working(iteration)
+                logging.info("Sent NotWorking to all neighbors.")
+            else:
+                for neighbor in neighbors_this_round:
+                    logging.debug("Sending to neighbor: %d", neighbor)
+                    self.communication.send(neighbor, to_send)
 
-            for x in self.my_neighbors:
-                if x not in neighbors_this_round:
-                    self.communication.send(
-                        x,
-                        {
-                            "CHANNEL": "DPSGD",
-                            "iteration": iteration,
-                            "NotWorking": True,
-                        },
-                    )
+                for x in self.my_neighbors:
+                    if x not in neighbors_this_round:
+                        self.communication.send(
+                            x,
+                            {
+                                "CHANNEL": "DPSGD",
+                                "iteration": iteration,
+                                "NotWorking": True,
+                            },
+                        )
 
             while not self.received_from_all():
                 response = self.receive_DPSGD()
                 if response:
                     sender, data = response
+                    if self.echo.is_attacker():
+                        self.echo.add_update(data, sender)
                     logging.debug(
                         "Received Model from {} of iteration {}: {}".format(
                             sender,
                             data["iteration"],
-                            "NotWorking" if "NotWorking" in data else "",
+                            "NotWorking" if "NotWorking" in data else data["params"],
                         )
                     )
                     if sender not in self.peer_deques:
@@ -164,6 +201,10 @@ class EL_Local(Node):
             else:
                 self.sharing.communication_round += 1
 
+            if self.echo.is_attacker():
+                self.echo.send_echo()
+
+
             if self.reset_optimizer:
                 self.optimizer = self.optimizer_class(
                     self.model.parameters(), **self.optimizer_params
@@ -185,6 +226,9 @@ class EL_Local(Node):
                     "total_meta": {},
                     "total_data_per_n": {},
                     "received_this_round": {},
+                    "loss_mia_update": {},
+                    "ent_mia_update": {},
+                    "mia_all": {},
                 }
 
             results_dict["total_bytes"][iteration + 1] = self.communication.total_bytes
@@ -214,6 +258,13 @@ class EL_Local(Node):
                     "Communication Rounds",
                     os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
                 )
+
+                mias = self.mia.mia_local()
+                results_dict["mia_all"][iteration + 1] = mias
+                results_dict["loss_mia_update"][iteration + 1] = mias[0]
+                results_dict["ent_mia_update"][iteration + 1] = mias[1]
+                self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
+                self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
 
             if self.dataset.__testing__ and rounds_to_test == 0:
                 rounds_to_test = self.test_after * change
@@ -325,6 +376,8 @@ class EL_Local(Node):
         test_after=5,
         train_evaluate_after=1,
         reset_optimizer=1,
+        attackers=[],
+        active_attackers=[],
         *args
     ):
         """
@@ -390,6 +443,9 @@ class EL_Local(Node):
         self.peer_deques = dict()
         self.connect_neighbors()
 
+        self.mia = MIA(model=self.model, dataset=self.dataset)
+        self.echo = Echo(self.uid, self.attackers, self.active_attackers, self.communication, self.my_neighbors)
+
     def __init__(
         self,
         rank: int,
@@ -404,6 +460,8 @@ class EL_Local(Node):
         test_after=5,
         train_evaluate_after=1,
         reset_optimizer=1,
+        attackers=[],
+        active_attackers=[],
         *args
     ):
         """
@@ -451,6 +509,8 @@ class EL_Local(Node):
             Other arguments
 
         """
+        self.attackers = attackers
+        self.active_attackers = active_attackers
 
         total_threads = os.cpu_count()
         self.threads_per_proc = max(
@@ -471,6 +531,8 @@ class EL_Local(Node):
             test_after,
             train_evaluate_after,
             reset_optimizer,
+            attackers,
+            active_attackers,
             *args
         )
 

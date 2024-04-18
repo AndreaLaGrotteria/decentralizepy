@@ -209,8 +209,9 @@ class Node:
             dataset_configs,
             ["dataset_package", "dataset_class", "model_class"],
         )
+        logging.info("Attacker count: %d", len(self.active_attackers))
         self.dataset = self.dataset_class(
-            self.rank, self.machine_id, self.mapping, **self.dataset_params
+            self.rank, self.machine_id, self.mapping, len(self.active_attackers), **self.dataset_params
         )
 
         logging.info("Dataset instantiation complete.")
@@ -405,6 +406,8 @@ class Node:
         iterations=1,
         log_dir=".",
         log_level=logging.INFO,
+        attackers=[],
+        active_attackers=[],
         *args
     ):
         """
@@ -450,6 +453,8 @@ class Node:
         self.threads_per_proc = max(
             math.floor(total_threads / mapping.procs_per_machine), 1
         )
+        self.attackers = attackers
+        self.active_attackers = active_attackers
         torch.set_num_threads(self.threads_per_proc)
         torch.set_num_interop_threads(1)
         # self.instantiate(
