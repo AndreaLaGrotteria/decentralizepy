@@ -52,7 +52,8 @@ if __name__ == "__main__":
     m_id = args.machine_id
 
     attackers = [0]
-    active_attackers = [0]
+    active_attackers = []
+    victims = []
 
     processes = []
     for r in range(procs_per_machine):
@@ -74,6 +75,7 @@ if __name__ == "__main__":
                     args.reset_optimizer,
                     attackers,
                     active_attackers,
+                    victims
                 ],
             )
         )

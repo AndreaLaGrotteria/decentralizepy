@@ -13,6 +13,9 @@ from decentralizepy.graphs.Graph import Graph
 from decentralizepy.mappings.Mapping import Mapping
 from decentralizepy.node.Node import Node
 
+from decentralizepy.attacks.Echo import Echo
+from decentralizepy.attacks.MIA import MIA
+
 
 class DPSGDNode(Node):
     """
@@ -44,6 +47,34 @@ class DPSGDNode(Node):
         plt.plot(x_axis, y_axis, label=label)
         plt.xlabel(xlabel)
         plt.title(title)
+        plt.savefig(filename)
+
+    def plot_multiple(self, res_list, labels, title, xlabel, filename):
+        """
+        Save Matplotlib plot. Clears previous plots.
+
+        Parameters
+        ----------
+        l : dict
+            dict of x -> y. `x` must be castable to int.
+        label : str
+            label of the plot. Used for legend.
+        title : str
+            Header
+        xlabel : str
+            x-axis label
+        filename : str
+            Name of file to save the plot as.
+
+        """
+        plt.clf()
+        for i,l in enumerate(res_list):
+            y_axis = [l[key] for key in l.keys()]
+            x_axis = list(map(int, l.keys()))
+            plt.plot(x_axis, y_axis, label=labels[i])
+        plt.xlabel(xlabel)
+        plt.title(title)
+        plt.legend()
         plt.savefig(filename)
 
     def get_neighbors(self, node=None):
@@ -82,7 +113,7 @@ class DPSGDNode(Node):
             #             del self.peer_deques[neighbor]
             #         self.communication.destroy_connection(neighbor, linger = 10000)
             #         self.barrier.remove(neighbor)
-
+  
             self.my_neighbors = new_neighbors
             self.connect_neighbors()
             logging.debug("Connected to all neighbors")
@@ -91,10 +122,15 @@ class DPSGDNode(Node):
             to_send["CHANNEL"] = "DPSGD"
 
             for neighbor in self.my_neighbors:
-                self.communication.send(neighbor, to_send)
+                if self.uid in self.active_attackers and self.iteration != 0:
+                    self.echo.send_echo_static(neighbor)
+                else:
+                    self.communication.send(neighbor, to_send)
 
             while not self.received_from_all():
                 sender, data = self.receive_DPSGD()
+                if self.echo.is_attacker():
+                    self.echo.add_update_static(data, sender)
                 logging.debug(
                     "Received Model from {} of iteration {}".format(
                         sender, data["iteration"]
@@ -136,6 +172,9 @@ class DPSGDNode(Node):
                     "total_bytes": {},
                     "total_meta": {},
                     "total_data_per_n": {},
+                    "loss_mia_update": {},
+                    "ent_mia_update": {},
+                    "mia_all": {},
                 }
 
             results_dict["total_bytes"][iteration + 1] = self.communication.total_bytes
@@ -161,6 +200,14 @@ class DPSGDNode(Node):
                     "Communication Rounds",
                     os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
                 )
+
+                if self.uid in self.victims:
+                    mias = self.mia.mia_local()
+                    results_dict["mia_all"][iteration + 1] = mias
+                    results_dict["loss_mia_update"][iteration + 1] = mias[0]
+                    results_dict["ent_mia_update"][iteration + 1] = mias[1]
+                    self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
+                    self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
 
             if self.dataset.__testing__ and rounds_to_test == 0:
                 rounds_to_test = self.test_after * change
@@ -350,6 +397,9 @@ class DPSGDNode(Node):
         self.peer_deques = dict()
         self.connect_neighbors()
 
+        self.echo = Echo(self.uid, self.attackers, self.active_attackers, self.communication, self.my_neighbors, self.victims)
+        self.mia = MIA(self.model, self.dataset)
+
     def received_from_all(self):
         """
         Check if all neighbors have sent the current iteration
@@ -383,6 +433,9 @@ class DPSGDNode(Node):
         test_after=5,
         train_evaluate_after=1,
         reset_optimizer=1,
+        attackers=[],
+        active_attackers=[],
+        vicitims=[],
         *args
     ):
         """
@@ -431,6 +484,11 @@ class DPSGDNode(Node):
 
         """
 
+
+        self.attackers = attackers
+        self.active_attackers = active_attackers
+        self.victims = vicitims
+
         total_threads = os.cpu_count()
         self.threads_per_proc = max(
             math.floor(total_threads / mapping.get_local_procs_count()), 1
@@ -455,4 +513,5 @@ class DPSGDNode(Node):
         logging.info(
             "Each proc uses %d threads out of %d.", self.threads_per_proc, total_threads
         )
+
         self.run()

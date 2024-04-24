@@ -139,7 +139,7 @@ class EL_Local(Node):
 
             if self.echo.is_attacker():
                 self.echo.send_not_working(iteration)
-                logging.info("Sent NotWorking to all neighbors.")
+                logging.info("Sent NotWorking 1.")
             else:
                 for neighbor in neighbors_this_round:
                     logging.debug("Sending to neighbor: %d", neighbor)
@@ -259,12 +259,13 @@ class EL_Local(Node):
                     os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
                 )
 
-                mias = self.mia.mia_local()
-                results_dict["mia_all"][iteration + 1] = mias
-                results_dict["loss_mia_update"][iteration + 1] = mias[0]
-                results_dict["ent_mia_update"][iteration + 1] = mias[1]
-                self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
-                self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
+                if self.uid in self.victims:
+                    mias = self.mia.mia_local()
+                    results_dict["mia_all"][iteration + 1] = mias
+                    results_dict["loss_mia_update"][iteration + 1] = mias[0]
+                    results_dict["ent_mia_update"][iteration + 1] = mias[1]
+                    self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
+                    self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
 
             if self.dataset.__testing__ and rounds_to_test == 0:
                 rounds_to_test = self.test_after * change
@@ -376,8 +377,6 @@ class EL_Local(Node):
         test_after=5,
         train_evaluate_after=1,
         reset_optimizer=1,
-        attackers=[],
-        active_attackers=[],
         *args
     ):
         """
@@ -439,12 +438,14 @@ class EL_Local(Node):
         self.barrier = set()
         self.my_neighbors = self.graph.neighbors(self.uid)
 
+        self.victims = self.my_neighbors
+
         self.init_sharing(config["SHARING"])
         self.peer_deques = dict()
         self.connect_neighbors()
 
         self.mia = MIA(model=self.model, dataset=self.dataset)
-        self.echo = Echo(self.uid, self.attackers, self.active_attackers, self.communication, self.my_neighbors)
+        self.echo = Echo(self.uid, self.attackers, self.active_attackers, self.communication, self.my_neighbors, self.victims)
 
     def __init__(
         self,
@@ -462,6 +463,7 @@ class EL_Local(Node):
         reset_optimizer=1,
         attackers=[],
         active_attackers=[],
+        vicitims=[],
         *args
     ):
         """
@@ -511,6 +513,7 @@ class EL_Local(Node):
         """
         self.attackers = attackers
         self.active_attackers = active_attackers
+        self.victims = vicitims
 
         total_threads = os.cpu_count()
         self.threads_per_proc = max(
@@ -531,8 +534,6 @@ class EL_Local(Node):
             test_after,
             train_evaluate_after,
             reset_optimizer,
-            attackers,
-            active_attackers,
             *args
         )
 

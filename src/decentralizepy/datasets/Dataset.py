@@ -62,9 +62,10 @@ class Dataset:
         self.uid = self.mapping.get_uid(rank, machine_id)
         self.only_local = only_local
         self.dataset_id = self.rank if self.only_local else self.uid
-        self.dataset_id-=num_attackers
+        # self.dataset_id-=num_attackers
         self.num_partitions = (
-            self.mapping.get_local_procs_count()-num_attackers
+            # self.mapping.get_local_procs_count()-num_attackers
+            self.mapping.get_local_procs_count()
             if self.only_local
             else self.mapping.get_n_procs()
         )

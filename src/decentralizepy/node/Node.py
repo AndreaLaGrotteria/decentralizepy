@@ -408,6 +408,7 @@ class Node:
         log_level=logging.INFO,
         attackers=[],
         active_attackers=[],
+        victims=[],
         *args
     ):
         """
@@ -455,6 +456,7 @@ class Node:
         )
         self.attackers = attackers
         self.active_attackers = active_attackers
+        self.victims = victims
         torch.set_num_threads(self.threads_per_proc)
         torch.set_num_interop_threads(1)
         # self.instantiate(
