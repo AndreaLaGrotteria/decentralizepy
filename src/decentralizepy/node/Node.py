@@ -211,7 +211,7 @@ class Node:
         )
         logging.info("Attacker count: %d", len(self.active_attackers))
         self.dataset = self.dataset_class(
-            self.rank, self.machine_id, self.mapping, len(self.active_attackers), **self.dataset_params
+            self.rank, self.machine_id, self.mapping, **self.dataset_params
         )
 
         logging.info("Dataset instantiation complete.")

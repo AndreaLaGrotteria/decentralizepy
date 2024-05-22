@@ -1,4 +1,5 @@
 import logging
+from multiprocessing import Manager
 from pathlib import Path
 from shutil import copy
 
@@ -51,9 +52,30 @@ if __name__ == "__main__":
     l = Linear(n_machines, procs_per_machine)
     m_id = args.machine_id
 
-    attackers = [0]
+    attackers = []
+    for i in range(my_config["ATTACK"]["num_attackers"]):
+        attackers.append(i)
     active_attackers = []
+    for i in range(my_config["ATTACK"]["num_active_attackers"]):
+        active_attackers.append(i)
     victims = []
+    if my_config["ATTACK"]["victims"] != '[]':
+        victims = my_config["ATTACK"]["victims"].replace("[", "").replace("]", "").split(",")
+        victims = [int(i) for i in victims]
+    elif my_config["ATTACK"]["num_victims"] == 'all':
+        victims = [i for i in range(procs_per_machine) if i not in attackers]
+    else:
+        # pick randomly num_victims victim from the non-attackers
+        import random
+        victims = random.sample([i for i in range(procs_per_machine) if i not in attackers], int(my_config["VICTIMS"]["num_victims"]))
+
+
+    # print("victim: ", victims)
+
+    manager = Manager()
+    dist = manager.dict()
+    for i in range(procs_per_machine):
+        dist[i] = float("inf")
 
     processes = []
     for r in range(procs_per_machine):
@@ -75,7 +97,8 @@ if __name__ == "__main__":
                     args.reset_optimizer,
                     attackers,
                     active_attackers,
-                    victims
+                    victims,
+                    dist
                 ],
             )
         )

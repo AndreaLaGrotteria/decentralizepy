@@ -48,7 +48,7 @@ class TCP(Communication):
         mapping,
         total_procs,
         addresses_filepath,
-        offset=9000,
+        offset=8000,
         recv_timeout=50,
     ):
         """

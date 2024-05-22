@@ -15,7 +15,7 @@ from decentralizepy.mappings.Mapping import Mapping
 from decentralizepy.node.Node import Node
 
 from decentralizepy.attacks.MIA import MIA
-from decentralizepy.attacks.Echo import Echo
+from decentralizepy.attacks.Echo import *
 
 
 class EL_Local(Node):
@@ -134,6 +134,12 @@ class EL_Local(Node):
 
             to_send = self.sharing.get_data_to_send()
             to_send["CHANNEL"] = "DPSGD"
+            self.echo.add_update(to_send, self.uid)
+
+            if self.uid in self.victims:
+                self.dist[self.uid] = 0
+            else:
+                self.dist[self.uid] += 1
 
             # Communication Phase
 
@@ -160,6 +166,7 @@ class EL_Local(Node):
                 response = self.receive_DPSGD()
                 if response:
                     sender, data = response
+                    self.dist[self.uid] = min(self.dist[self.uid], self.dist[sender] + 1)
                     if self.echo.is_attacker():
                         self.echo.add_update(data, sender)
                     logging.debug(
@@ -259,13 +266,13 @@ class EL_Local(Node):
                     os.path.join(self.log_dir, "{}_train_loss.png".format(self.rank)),
                 )
 
-                if self.uid in self.victims:
-                    mias = self.mia.mia_local()
-                    results_dict["mia_all"][iteration + 1] = mias
-                    results_dict["loss_mia_update"][iteration + 1] = mias[0]
-                    results_dict["ent_mia_update"][iteration + 1] = mias[1]
-                    self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
-                    self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
+                # if self.uid in self.victims:
+                mias = self.mia.mia_local()
+                results_dict["mia_all"][iteration + 1] = mias
+                results_dict["loss_mia_update"][iteration + 1] = mias[0]
+                results_dict["ent_mia_update"][iteration + 1] = mias[1]
+                self.plot_multiple([results_dict["loss_mia_update"]],["update"],"Membership Inference Attack Loss","Communication Rounds",os.path.join(self.log_dir, "{}_mia_loss.png".format(self.rank)))
+                self.plot_multiple([results_dict["ent_mia_update"]],["update"],"Membership Inference Attack Entropy","Communication Rounds",os.path.join(self.log_dir, "{}_mia_entropy.png".format(self.rank)))
 
             if self.dataset.__testing__ and rounds_to_test == 0:
                 rounds_to_test = self.test_after * change
@@ -363,6 +370,24 @@ class EL_Local(Node):
             self.rank, self.machine_id, self.mapping, self.graph.n_procs, **comm_params
         )
 
+    def init_attack(self, attack_configs):
+        """
+        Instantiate attack module from config.
+
+        Parameters
+        ----------
+        attack_configs : dict
+            Python dict containing attack config params
+
+        """
+        attack_module = importlib.import_module(attack_configs["attack_package"])
+        attack_class = getattr(attack_module, attack_configs["attack_class"])
+        attack_params = utils.remove_keys(attack_configs, ["attack_package", "attack_class"])
+        self.addresses_filepath = attack_params.get("addresses_filepath", None)
+        self.echo = attack_class(
+            self.uid, self.attackers, self.active_attackers, self.communication, self.my_neighbors, self.victims, self.dist
+        )
+
     def instantiate(
         self,
         rank: int,
@@ -438,14 +463,15 @@ class EL_Local(Node):
         self.barrier = set()
         self.my_neighbors = self.graph.neighbors(self.uid)
 
-        self.victims = self.my_neighbors
+        # self.victims = self.my_neighbors
 
         self.init_sharing(config["SHARING"])
         self.peer_deques = dict()
         self.connect_neighbors()
 
         self.mia = MIA(model=self.model, dataset=self.dataset)
-        self.echo = Echo(self.uid, self.attackers, self.active_attackers, self.communication, self.my_neighbors, self.victims)
+        self.init_attack(config["ATTACK"])
+        # self.echo = Echo(self.uid, self.attackers, self.active_attackers, self.communication, self.my_neighbors, self.victims, self.dist)
 
     def __init__(
         self,
@@ -464,6 +490,7 @@ class EL_Local(Node):
         attackers=[],
         active_attackers=[],
         vicitims=[],
+        dist=None,
         *args
     ):
         """
@@ -514,6 +541,7 @@ class EL_Local(Node):
         self.attackers = attackers
         self.active_attackers = active_attackers
         self.victims = vicitims
+        self.dist = dist
 
         total_threads = os.cpu_count()
         self.threads_per_proc = max(

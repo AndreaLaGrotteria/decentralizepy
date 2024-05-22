@@ -14,7 +14,6 @@ class Dataset:
         rank: int,
         machine_id: int,
         mapping: Mapping,
-        num_attackers: int = 0,
         random_seed: int = 1234,
         only_local=False,
         train_dir="",

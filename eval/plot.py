@@ -8,8 +8,34 @@ import pandas as pd
 import torch
 from matplotlib import pyplot as plt
 
+from localconfig import LocalConfig
 
-def get_stats(l):
+import re
+
+def natural_key(string):
+    """Extract the number from the string for sorting."""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split('(\d+)', string)]
+
+def get_victim_number(s):
+    match = re.search(r'victims_\[(\d+)\]', s)
+    if match:
+        return int(match.group(1))
+    else:
+        return None
+    
+def get_active_attack(s):
+    if 'attackers_0' in s:
+        return False
+    else:
+        return True
+
+def read_ini(file_path):
+    config = LocalConfig(file_path)
+    # for section in config:
+    #     for key, value in config.items(section):
+    return config
+
+def get_stats(l, full_epochs=False, training_rounds=False):
     assert len(l) > 0
     mean_dict, stdev_dict, min_dict, max_dict = {}, {}, {}, {}
     for key in l[0].keys():
@@ -23,6 +49,18 @@ def get_stats(l):
         stdev_dict[int(key)] = std
         min_dict[int(key)] = min
         max_dict[int(key)] = max
+    if full_epochs:
+        mean_dict = {k*6: v for k, v in mean_dict.items()}
+        stdev_dict = {k*6: v for k, v in stdev_dict.items()}
+        min_dict = {k*6: v for k, v in min_dict.items()}
+        max_dict = {k*6: v for k, v in max_dict.items()}
+
+    if training_rounds:
+        mean_dict = {k*10: v for k, v in mean_dict.items()}
+        stdev_dict = {k*10: v for k, v in stdev_dict.items()}
+        min_dict = {k*10: v for k, v in min_dict.items()}
+        max_dict = {k*10: v for k, v in max_dict.items()}
+    
     return mean_dict, stdev_dict, min_dict, max_dict
 
 
@@ -44,7 +82,7 @@ def replace_dict_key(d_org: dict, d_other: dict):
     return result
 
 
-def plot_results(path, centralized, data_machine="machine0", data_node=0):
+def plot_results(path, centralized, data_machine="machine0", data_node=0, training_rounds=False):
     folders = os.listdir(path)
     if centralized.lower() in ["true", "1", "t", "y", "yes"]:
         centralized = True
@@ -52,12 +90,21 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
     else:
         centralized = False
 
+    if training_rounds:
+        x_label = "Training Rounds"
+    else:
+        x_label = "Communication Rounds"
+
     folders.sort()
     print("Reading folders from: ", path)
     print("Folders: ", folders)
     bytes_means, bytes_stdevs = {}, {}
     meta_means, meta_stdevs = {}, {}
     data_means, data_stdevs = {}, {}
+    full_epochs = False
+    avg_mia_victims = False
+    mia_victims = []
+    mia_victims_base = []
     for folder in folders:
         folder_path = Path(os.path.join(path, folder))
         if not folder_path.is_dir() or "weights" == folder_path.name:
@@ -70,6 +117,7 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
                 continue
             files = os.listdir(mf_path)
             files = [f for f in files if f.endswith("_results.json")]
+            files.sort(key=natural_key)
             files.remove("0_results.json")
             for f in files:
                 filepath = os.path.join(mf_path, f)
@@ -79,14 +127,42 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
             data_node = -1
         else:
             data_node = 6
+        
         with open(folder_path / data_machine / f"{data_node}_results.json", "r") as f:
             main_data = json.load(f)
         main_data = [main_data]
 
+        config = read_ini(folder_path / data_machine/ "config_EL-multi.ini")
+        my_config = dict()
+        for section in config:
+            my_config[section] = dict(config.items(section))
+
+        
+        full_epochs = my_config['TRAIN_PARAMS']['full_epochs']
+
+        # if avg_mia_victims:
+        #     victim = get_victim_number(folder)
+        #     active = get_active_attack(folder)
+        #     if victim is not None:
+        #         if active:
+        #             mia_victims.append(results[victim-1]["loss_mia_update"])
+        #             mia_victims_base.append(results[victim-1]["loss_mia_update"])
+        #         else:
+        #             mia_victims_base.append(results[victim-1]["loss_mia_update"])
+
+        if avg_mia_victims:
+            victim = get_victim_number(folder)
+            if victim is not None:
+                mia_victims.append(results[victim-1]["loss_mia_update"])
+                for i, el in enumerate(results):
+                    mia_victims_base.append(el["loss_mia_update"])
+
+
+
         # Plotting bytes over time
         plt.figure(10)
-        b_means, stdevs, mins, maxs = get_stats([x["total_bytes"] for x in results])
-        plot(b_means, stdevs, mins, maxs, "Total Bytes", folder, "lower right")
+        b_means, stdevs, mins, maxs = get_stats([x["total_bytes"] for x in results], full_epochs, training_rounds)
+        plot(b_means, stdevs, mins, maxs, "Total Bytes", folder, "lower right", x_label)
         df = pd.DataFrame(
             {
                 "mean": list(b_means.values()),
@@ -102,8 +178,8 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
 
         # Plot Training loss
         plt.figure(1)
-        means, stdevs, mins, maxs = get_stats([x["train_loss"] for x in results])
-        plot(means, stdevs, mins, maxs, "Training Loss", folder, "upper right")
+        means, stdevs, mins, maxs = get_stats([x["train_loss"] for x in results], full_epochs, training_rounds)
+        plot(means, stdevs, mins, maxs, "Training Loss", folder, "upper right", x_label)
 
         correct_bytes = [b_means[x] for x in means]
 
@@ -136,10 +212,10 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
         # Plot Testing loss
         plt.figure(2)
         if centralized:
-            means, stdevs, mins, maxs = get_stats([x["test_loss"] for x in main_data])
+            means, stdevs, mins, maxs = get_stats([x["test_loss"] for x in main_data], full_epochs, training_rounds)
         else:
-            means, stdevs, mins, maxs = get_stats([x["test_loss"] for x in results])
-        plot(means, stdevs, mins, maxs, "Testing Loss", folder, "upper right")
+            means, stdevs, mins, maxs = get_stats([x["test_loss"] for x in results], full_epochs, training_rounds)
+        plot(means, stdevs, mins, maxs, "Testing Loss", folder, "upper right", x_label)
         df = pd.DataFrame(
             {
                 "mean": list(means.values()),
@@ -169,10 +245,10 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
         # Plot Testing Accuracy
         plt.figure(3)
         if centralized:
-            means, stdevs, mins, maxs = get_stats([x["test_acc"] for x in main_data])
+            means, stdevs, mins, maxs = get_stats([x["test_acc"] for x in main_data], full_epochs, training_rounds)
         else:
-            means, stdevs, mins, maxs = get_stats([x["test_acc"] for x in results])
-        plot(means, stdevs, mins, maxs, "Testing Accuracy", folder, "lower right")
+            means, stdevs, mins, maxs = get_stats([x["test_acc"] for x in results], full_epochs, training_rounds)
+        plot(means, stdevs, mins, maxs, "Testing Accuracy", folder, "lower right", x_label)
         df = pd.DataFrame(
             {
                 "mean": list(means.values()),
@@ -215,7 +291,7 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
                 meta_list.append({max_key: x["total_meta"][max_key]})
             else:
                 meta_list.append({max_key: 0})
-        means, stdevs, mins, maxs = get_stats(meta_list)
+        means, stdevs, mins, maxs = get_stats(meta_list, full_epochs, training_rounds)
         meta_means[folder] = list(means.values())[0]
         meta_stdevs[folder] = list(stdevs.values())[0]
 
@@ -223,14 +299,14 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
         for x in results:
             max_key = str(max(list(map(int, x["total_data_per_n"].keys()))))
             data_list.append({max_key: x["total_data_per_n"][max_key]})
-        means, stdevs, mins, maxs = get_stats(data_list)
+        means, stdevs, mins, maxs = get_stats(data_list, full_epochs, training_rounds)
         data_means[folder] = list(means.values())[0]
         data_stdevs[folder] = list(stdevs.values())[0]
 
         # Plot MIA loss
         plt.figure(6)
-        means, stdevs, mins, maxs = get_stats([x["loss_mia_update"] for x in results if x["loss_mia_update"]])
-        plot(means, stdevs, mins, maxs, "MIA Loss", folder, "upper right")
+        means, stdevs, mins, maxs = get_stats([x["loss_mia_update"] for x in results if x["loss_mia_update"]], full_epochs, training_rounds)
+        plot(means, stdevs, mins, maxs, "MIA Loss", folder, "upper right", x_label)
 
         correct_bytes = [b_means[x] for x in means]
 
@@ -260,6 +336,15 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
         df.to_csv(
             os.path.join(path, "mia_loss_" + folder + ".csv"), index_label="rounds"
         )
+    
+
+    if avg_mia_victims:
+        plt.figure(14)
+        means, stdevs, mins, maxs = get_stats(mia_victims, full_epochs, training_rounds)
+        plot(means, stdevs, mins, maxs, "MIA Loss", 'targeted', "upper right", x_label)
+        means, stdevs, mins, maxs = get_stats(mia_victims_base, full_epochs, training_rounds)
+        plot(means, stdevs, mins, maxs, "MIA Loss", 'base', "upper right", x_label)
+        plt.savefig(os.path.join(path, "mia_loss_targeted.png"), dpi=300)
 
     plt.figure(10)
     plt.savefig(os.path.join(path, "total_bytes.png"), dpi=300)
@@ -278,6 +363,8 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
     plt.savefig(os.path.join(path, "test_acc.png"), dpi=300)
     plt.figure(6)
     plt.savefig(os.path.join(path, "mia_loss.png"), dpi=300)
+
+
 
 
     # Plot total_bytes
@@ -319,7 +406,6 @@ def plot_results(path, centralized, data_machine="machine0", data_node=0):
     plt.xticks(x_pos, list(meta_means.keys()))
     plt.savefig(os.path.join(path, "parameters_metadata.png"), dpi=300)
 
-
 def plot_parameters(path):
     plt.figure(4)
     folders = os.listdir(path)
@@ -354,10 +440,18 @@ def plot_parameters(path):
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) == 3
+    assert len(sys.argv) == 3 or len(sys.argv) == 4
     # The args are:
     # 1: the folder with the data
     # 2: True/False: If True then the evaluation on the test set was centralized
+    # 3: if x_axis uses training rounds or communication rounds. True for training rounds, False for communication rounds
     # for federated learning folder name must start with "FL"!
-    plot_results(sys.argv[1], sys.argv[2])
+    if len(sys.argv) == 4:
+        if sys.argv[3].lower() in ["true", "1", "t", "y", "yes"]:
+            training_rounds = True
+        else:
+            training_rounds = False
+        plot_results(sys.argv[1], sys.argv[2], training_rounds=training_rounds)
+    else:
+        plot_results(sys.argv[1], sys.argv[2])
     # plot_parameters(sys.argv[1])
